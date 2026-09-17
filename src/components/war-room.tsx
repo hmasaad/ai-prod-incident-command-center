@@ -5,8 +5,12 @@ import { useState, type ReactNode } from "react";
 import { DEPLOY_AT } from "@/lib/clock";
 import type { Recommendation } from "@/lib/engine/recommend";
 import { formatDuration, formatNumber, formatPct, formatTime } from "@/lib/format";
+import { isClosed } from "@/lib/platform/machine";
 import type { ActionType, Incident, WorldState } from "@/lib/types";
 import { ConfidenceBar, HealthDot, MetricChart, SevBadge, StatusBadge, TopBar } from "./chrome";
+import { DetectionBoard } from "./detection-board";
+import { PipelineBoard } from "./pipeline-board";
+import { StateMachineBoard } from "./state-machine-board";
 import { IconArrow, IconGit, IconUsers } from "./icons";
 import { runAction } from "./use-command-state";
 
@@ -23,7 +27,8 @@ export function WarRoom({
   const [busy, setBusy] = useState<ActionType | null>(null);
   const spark = state.metrics.filter((m) => m.ts >= DEPLOY_AT - 25 * 60_000);
   const deploy = state.deployments.find((d) => d.id === "dep-payments-2814");
-  const openCount = state.incidents.filter((i) => i.status !== "resolved").length;
+  const openCount = state.incidents.filter((i) => !isClosed(i.status)).length;
+  const machineState = incident.machine?.state ?? incident.status;
 
   async function fire(type: ActionType) {
     setBusy(type);
@@ -53,6 +58,14 @@ export function WarRoom({
         <div className="mono text-[12px] text-muted">{formatDuration(state.now - incident.startedAt)} open</div>
       </div>
 
+      {state.pipeline && state.pipeline.incidentId === incident.id && (
+        <PipelineBoard pipeline={state.pipeline} />
+      )}
+
+      {incident.detection && <DetectionBoard detection={incident.detection} />}
+
+      <StateMachineBoard incident={incident} />
+
       <section className="grid gap-0 border-b border-line lg:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.7fr)]">
         <div className="border-b border-line p-4 lg:border-b-0 lg:border-r">
           <div className="kicker mb-2">Commander brief</div>
@@ -73,7 +86,7 @@ export function WarRoom({
             <div className="kicker mb-1">Confidence</div>
             <ConfidenceBar value={incident.investigation.confidence} />
           </div>
-          {incident.status !== "resolved" && rec?.primary === "rollback" && !incident.rollbackApplied && (
+          {machineState === "REMEDIATION_PENDING" && rec?.primary === "rollback" && !incident.rollbackApplied && (
             <div className="mt-4 space-y-2">
               {!armed ? (
                 <button
@@ -87,7 +100,7 @@ export function WarRoom({
                 <div className="space-y-2 border border-sev1 p-3">
                   <p className="text-[12px] text-muted">
                     Rolls Payments API to v2.8.13. Auth recovers as pool pressure drops. This is the
-                    corrective action.
+                    corrective action. Machine: REMEDIATION_PENDING → REMEDIATING.
                   </p>
                   <div className="flex gap-2">
                     <button
@@ -110,14 +123,45 @@ export function WarRoom({
               )}
             </div>
           )}
-          {incident.rollbackApplied && incident.status === "responding" && (
+          {machineState === "REMEDIATION_PENDING" && rec?.primary === "disable_flag" && (
+            <button
+              type="button"
+              disabled={busy !== null}
+              className="mt-4 w-full border border-sev1 bg-sev1 px-3 py-2 text-[12px] font-medium text-bg"
+              onClick={() => void fire("disable_flag")}
+            >
+              {busy === "disable_flag" ? "Disabling…" : "Disable new-tax-engine"}
+            </button>
+          )}
+          {(machineState === "NEED_HUMAN_INPUT" || machineState === "ESCALATED") && (
+            <div className="mt-4 space-y-2">
+              <button
+                type="button"
+                disabled={busy !== null}
+                className="w-full border border-sev2 bg-sev2/10 px-3 py-2 text-[12px] text-sev2"
+                onClick={() => void fire("provide_input")}
+              >
+                {busy === "provide_input" ? "Attaching…" : rec?.label ?? "Attach missing evidence"}
+              </button>
+              {machineState === "NEED_HUMAN_INPUT" && (
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  className="w-full border border-line px-3 py-2 text-[12px] text-muted"
+                  onClick={() => void fire("escalate")}
+                >
+                  {busy === "escalate" ? "Escalating…" : "Escalate"}
+                </button>
+              )}
+            </div>
+          )}
+          {machineState === "REMEDIATING" && (
             <p className="mt-4 border border-line px-3 py-2 text-[12px] text-muted">
-              Rollback in flight. Watching error rate, pool wait, and Auth collateral.
+              Remediation in flight. Machine advances to VERIFYING when the change lands — agents
+              resume from checkpoints, they do not re-run from scratch.
             </p>
           )}
-          {(incident.status === "monitoring" ||
-            (incident.rollbackApplied && (spark.at(-1)?.errorRate ?? 99) < 3)) &&
-            incident.status !== "resolved" && (
+          {machineState === "VERIFYING" && (
             <button
               type="button"
               disabled={busy !== null}
@@ -127,7 +171,7 @@ export function WarRoom({
               Resolve incident
             </button>
           )}
-          {incident.status === "resolved" && (
+          {isClosed(machineState) && (
             <Link
               href={`/incidents/${incident.id}/postmortem`}
               className="mt-4 block border border-line px-3 py-2 text-center text-[12px]"
@@ -229,7 +273,7 @@ export function WarRoom({
         </div>
         <div className="p-4">
           <div className="kicker mb-3">Coordinate</div>
-          {(["human", "agent", "service"] as const).map((kind) => (
+          {(["human", "service"] as const).map((kind) => (
             <div key={kind} className="mb-3">
               <div className="kicker mb-1">{kind}s</div>
               <ul className="space-y-1">
@@ -247,16 +291,24 @@ export function WarRoom({
               </ul>
             </div>
           ))}
+          <p className="mb-3 text-[11px] text-muted">
+            Agents live in the platform pipeline above — detection, investigation, and comms run in
+            parallel; root cause through postmortem is serial.
+          </p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <GhostAction disabled={busy !== null} onClick={() => void fire("page_oncall")}>
-              Page on-call
-            </GhostAction>
-            <GhostAction disabled={busy !== null} onClick={() => void fire("open_channel")}>
-              Open #inc-4821
-            </GhostAction>
-            <GhostAction disabled={busy !== null} onClick={() => void fire("scale_pool")}>
-              Raise pool cap
-            </GhostAction>
+            {incident.id === "INC-4821" && (
+              <>
+                <GhostAction disabled={busy !== null} onClick={() => void fire("page_oncall")}>
+                  Page on-call
+                </GhostAction>
+                <GhostAction disabled={busy !== null} onClick={() => void fire("open_channel")}>
+                  Open #inc-4821
+                </GhostAction>
+                <GhostAction disabled={busy !== null} onClick={() => void fire("scale_pool")}>
+                  Raise pool cap
+                </GhostAction>
+              </>
+            )}
           </div>
         </div>
       </section>

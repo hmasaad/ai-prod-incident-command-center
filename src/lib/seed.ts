@@ -10,7 +10,8 @@ import {
   VIEWER_START,
 } from "./clock";
 import { investigate } from "./engine/correlate";
-import { computeFleet, serviceHealth } from "./engine/detect";
+import { computeFleet, detectIncident, serviceHealth } from "./engine/detect";
+import { seedMachine } from "./platform/machine";
 import type {
   Deployment,
   Incident,
@@ -23,6 +24,7 @@ import type {
 export interface SimFlags {
   rollbackAt?: number;
   mitigateAt?: number;
+  disableFlagAt?: number;
 }
 
 function metricAt(ts: number, flags: SimFlags, rand: () => number): MetricSample {
@@ -216,11 +218,20 @@ export function buildIncident(now: number, services: Service[], flags: SimFlags)
     mitigationApplied: Boolean(flags.mitigateAt),
   });
 
-  const status: Incident["status"] = flags.rollbackAt
-    ? now > flags.rollbackAt + 4 * 60_000
-      ? "monitoring"
-      : "responding"
-    : "investigating";
+  const machine = seedMachine("INC-4821");
+  const status = machine.state;
+  const metrics = buildMetrics(now, flags);
+  const logs = buildLogs(now, flags);
+  const deployments = baseDeployments();
+  const detection = detectIncident({
+    incidentId: "INC-4821",
+    now,
+    metrics,
+    logs,
+    deployments,
+    services,
+    rollbackApplied: Boolean(flags.rollbackAt),
+  });
 
   return {
     id: "INC-4821",
@@ -234,6 +245,8 @@ export function buildIncident(now: number, services: Service[], flags: SimFlags)
     commander: "Maya Chen",
     rollbackApplied: Boolean(flags.rollbackAt),
     mitigationApplied: Boolean(flags.mitigateAt),
+    machine,
+    detection,
     brief: {
       summary:
         "Payments API v2.8.14 exhausted the shared Postgres pool. Auth is failing as collateral. Highest-confidence fix is an immediate rollback to v2.8.13.",
@@ -246,7 +259,7 @@ export function buildIncident(now: number, services: Service[], flags: SimFlags)
     timeline: [
       { id: "t1", ts: DEPLOY_AT, kind: "note", title: "Deploy v2.8.14 complete", detail: "Payments API baked to 100% after green canaries.", actor: "spinnaker" },
       { id: "t2", ts: INCIDENT_AT, kind: "detect", title: "Error cliff on Payments API", detail: "HTTP 500s and pool timeouts jump together. Auth follows 20s later.", actor: "detector" },
-      { id: "t3", ts: DETECTED_AT, kind: "detect", title: "INC-4821 opened · SEV-1", detail: "Failing request ratio crossed the 10% SEV-1 page.", actor: "detector" },
+      { id: "t3", ts: DETECTED_AT, kind: "detect", title: "INC-4821 opened · SEV-1", detail: "Detection agent: actual incident, not a noisy alert. 94% · Payments API · started 10:42. Opening sample http_5xx_rate 12.4% vs 0.3% baseline.", actor: "detector" },
       { id: "t4", ts: INVESTIGATED_AT, kind: "investigate", title: "Commander brief ready", detail: "Payments API v2.8.14 exhausted the shared Postgres pool. Auth is failing as collateral. Highest-confidence fix is an immediate rollback to v2.8.13.", actor: "investigator-agent" },
       { id: "t5", ts: INVESTIGATED_AT + 40_000, kind: "coordinate", title: "Maya Chen attached as commander", detail: "Jordan Blake on comms. Payments on-call acknowledged.", actor: "pagerduty" },
     ],
@@ -271,7 +284,7 @@ export function secondaryIncidents(): Incident[] {
       id: "INC-4818",
       title: "Checkout p95 elevated after tax-engine flag",
       severity: "SEV-2",
-      status: "investigating",
+      status: "NEED_HUMAN_INPUT",
       startedAt: Date.parse("2026-09-14T08:14:00Z"),
       detectedAt: Date.parse("2026-09-14T08:16:40Z"),
       affectedServiceIds: ["checkout-api"],
@@ -279,6 +292,15 @@ export function secondaryIncidents(): Incident[] {
       commander: "Samira Ott",
       rollbackApplied: false,
       mitigationApplied: false,
+      machine: seedMachine("INC-4818"),
+      detection: detectIncident({
+        incidentId: "INC-4818",
+        now: Date.parse("2026-09-14T11:08:00Z"),
+        metrics: [],
+        logs: [],
+        deployments: [],
+        services: [],
+      }),
       brief: {
         summary: "Flag new-tax-engine is still off globally but a 5% experiment leaked to EU carts. Not on the payments path.",
         impact: "Checkout p95 410ms · 4% extra errors on tax-inclusive carts",
@@ -301,6 +323,8 @@ export function secondaryIncidents(): Incident[] {
       },
       timeline: [
         { id: "x1", ts: Date.parse("2026-09-14T08:14:00Z"), kind: "detect", title: "Checkout p95 watch fired", detail: "EU tax carts only.", actor: "detector" },
+        { id: "x2", ts: Date.parse("2026-09-14T08:16:40Z"), kind: "detect", title: "INC-4818 opened · SEV-2", detail: "Triage assigned checkout-api. Machine entered TRIAGING.", actor: "detector" },
+        { id: "x3", ts: Date.parse("2026-09-14T08:32:00Z"), kind: "investigate", title: "Insufficient data", detail: "64% confidence after 15m. Tax-engine traces missing. Machine → NEED_HUMAN_INPUT.", actor: "investigator" },
       ],
       actors: [
         { id: "c1", kind: "human", name: "Samira Ott", role: "Commander", status: "active" },
@@ -312,7 +336,7 @@ export function secondaryIncidents(): Incident[] {
       id: "INC-4812",
       title: "Redis eviction storm on session-redis",
       severity: "SEV-3",
-      status: "resolved",
+      status: "POSTMORTEM",
       startedAt: Date.parse("2026-09-13T19:02:00Z"),
       detectedAt: Date.parse("2026-09-13T19:04:00Z"),
       resolvedAt: Date.parse("2026-09-13T19:41:00Z"),
@@ -321,6 +345,16 @@ export function secondaryIncidents(): Incident[] {
       commander: "Luis Ortega",
       rollbackApplied: false,
       mitigationApplied: true,
+      machine: seedMachine("INC-4812"),
+      detection: detectIncident({
+        incidentId: "INC-4812",
+        now: Date.parse("2026-09-13T19:44:00Z"),
+        metrics: [],
+        logs: [],
+        deployments: [],
+        services: [],
+        closed: true,
+      }),
       brief: {
         summary: "Memory cap too low after key-size change. Scaled Redis and added TTL jitter in v4.1.2.",
         impact: "Elevated login latency, no hard errors",
@@ -365,5 +399,6 @@ export function createWorld(now = VIEWER_START, flags: SimFlags = {}): WorldStat
     incidents: [primary, ...secondaryIncidents()],
     fleet,
     alerts: primary.timeline.filter((e) => e.kind === "detect" || e.kind === "investigate"),
+    pipeline: null,
   };
 }

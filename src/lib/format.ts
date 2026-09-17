@@ -38,7 +38,7 @@ export function formatDelta(n: number) {
 }
 
 export function statusLabel(status: IncidentStatus) {
-  return status.replace("_", " ").toUpperCase();
+  return status.replaceAll("_", " ");
 }
 
 export function severityTone(sev: Severity) {

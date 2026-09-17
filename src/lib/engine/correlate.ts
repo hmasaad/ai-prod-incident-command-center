@@ -156,9 +156,9 @@ export function investigate(input: {
 
   if (input.rollbackApplied && last.errorRate < 3) {
     likelyCause = "Deployment v2.8.14 (rolled back)";
-    recommendedAction = "Monitor recovery, then resolve";
+    recommendedAction = "Verify recovery, then resolve";
     summary =
-      "Rollback to v2.8.13 restored pool headroom. Error rate and latency are returning to baseline. Stay in monitoring until Auth and Payments are healthy for 5 minutes.";
+      "Rollback to v2.8.13 restored pool headroom. Error rate and latency are returning to baseline. Stay in VERIFYING until Auth and Payments are healthy.";
   } else if (input.mitigationApplied && !input.rollbackApplied) {
     recommendedAction = "Roll back v2.8.14 (still required)";
     summary =

@@ -18,9 +18,17 @@ export function SevBadge({ severity }: { severity: Severity }) {
 }
 
 export function StatusBadge({ status }: { status: IncidentStatus }) {
+  const tone =
+    status === "ESCALATED" || status === "DETECTED"
+      ? "text-sev1 border-sev1/40 bg-sev1/10"
+      : status === "NEED_HUMAN_INPUT" || status === "REMEDIATION_PENDING" || status === "REMEDIATING"
+        ? "text-sev2 border-sev2/40 bg-sev2/10"
+        : status === "RESOLVED" || status === "POSTMORTEM"
+          ? "text-ok border-ok/40 bg-ok/10"
+          : "text-info border-info/40 bg-info/10";
   return (
-    <span className="mono border border-line px-1.5 py-0.5 text-[10px] tracking-wide text-muted">
-      {status.toUpperCase()}
+    <span className={`mono border px-1.5 py-0.5 text-[10px] tracking-wide ${tone}`}>
+      {status.replaceAll("_", " ")}
     </span>
   );
 }
@@ -50,7 +58,7 @@ export function TopBar({
         </div>
         <div>
           <div className="text-sm font-medium tracking-tight">Incident Command Center</div>
-          <div className="kicker">AI production commander · detect · investigate · respond</div>
+          <div className="kicker">AI production commander · gateway · orchestrator · agents</div>
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-4 text-[12px] text-muted">

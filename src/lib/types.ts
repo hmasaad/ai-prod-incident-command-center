@@ -1,10 +1,16 @@
 export type Severity = "SEV-1" | "SEV-2" | "SEV-3" | "SEV-4";
 export type IncidentStatus =
-  | "detecting"
-  | "investigating"
-  | "responding"
-  | "monitoring"
-  | "resolved";
+  | "DETECTED"
+  | "TRIAGING"
+  | "INVESTIGATING"
+  | "ROOT_CAUSE_IDENTIFIED"
+  | "REMEDIATION_PENDING"
+  | "REMEDIATING"
+  | "VERIFYING"
+  | "RESOLVED"
+  | "POSTMORTEM"
+  | "NEED_HUMAN_INPUT"
+  | "ESCALATED";
 export type ServiceHealth = "healthy" | "degraded" | "outage";
 export type ServiceLayer = "edge" | "gateway" | "api" | "data" | "async";
 export type HypothesisKind = "deploy" | "config" | "dependency" | "traffic" | "infra";
@@ -14,7 +20,9 @@ export type ActionType =
   | "page_oncall"
   | "open_channel"
   | "disable_flag"
-  | "resolve";
+  | "resolve"
+  | "provide_input"
+  | "escalate";
 export type ActionStatus = "pending" | "running" | "succeeded" | "failed";
 export type ActorKind = "human" | "agent" | "service";
 export type LogLevel = "info" | "warn" | "error" | "fatal";
@@ -49,6 +57,45 @@ export interface FleetSnapshot {
   crashDeltaPct: number;
   failingRequestPct: number;
   affectedUsers: number;
+}
+
+export type DetectionSource =
+  | "alerts"
+  | "logs"
+  | "errors"
+  | "infra"
+  | "deploy"
+  | "database"
+  | "cloud";
+
+/** One monitoring sample the detection agent consumed — not an LLM prompt. */
+export interface DetectionSample {
+  service: string;
+  metric: string;
+  current: string;
+  baseline: string;
+  increase: string;
+}
+
+export interface DetectionSignal {
+  source: DetectionSource;
+  label: string;
+  firing: boolean;
+  sample?: DetectionSample;
+  detail: string;
+}
+
+export interface DetectionVerdict {
+  incidentId: string;
+  verdict: "incident" | "noisy";
+  question: string;
+  answer: string;
+  severity: Severity;
+  confidence: number;
+  affected: string[];
+  startedAt: number;
+  lead: DetectionSample;
+  signals: DetectionSignal[];
 }
 
 export interface Deployment {
@@ -162,6 +209,8 @@ export interface Incident {
   actions: ActionRecord[];
   mitigationApplied: boolean;
   rollbackApplied: boolean;
+  machine: IncidentMachine;
+  detection: DetectionVerdict;
   brief: {
     summary: string;
     impact: string;
@@ -187,6 +236,83 @@ export interface Postmortem {
   actionItems: { owner: string; item: string }[];
 }
 
+export type AgentId =
+  | "detection"
+  | "investigation"
+  | "communication"
+  | "root-cause"
+  | "blast-radius"
+  | "remediation"
+  | "verification"
+  | "postmortem";
+
+export type MachineEvent =
+  | "triage"
+  | "begin_investigation"
+  | "evidence_sufficient"
+  | "insufficient_data"
+  | "human_input"
+  | "escalate"
+  | "playbook_ready"
+  | "approve_remediation"
+  | "change_landed"
+  | "declare_resolved"
+  | "postmortem_ready";
+
+export interface TransitionRecord {
+  at: number;
+  event: MachineEvent;
+  from: IncidentStatus;
+  to: IncidentStatus;
+  reason: string;
+}
+
+export interface Checkpoint {
+  id: string;
+  at: number;
+  state: IncidentStatus;
+  event: MachineEvent;
+  agentId?: AgentId;
+  note: string;
+}
+
+export interface IncidentMachine {
+  state: IncidentStatus;
+  enteredAt: number;
+  history: TransitionRecord[];
+  checkpoints: Checkpoint[];
+  humanEvidence: boolean;
+}
+
+export type AgentRunStatus = "idle" | "running" | "complete" | "blocked" | "skipped";
+
+export interface AgentRun {
+  id: AgentId;
+  name: string;
+  role: string;
+  consumes: string;
+  status: AgentRunStatus;
+  summary: string;
+}
+
+export interface GatewayEvent {
+  id: string;
+  ts: number;
+  source: "alerts" | "metrics" | "deploy" | "human" | "slack" | "logs" | "errors" | "cloud" | "database";
+  title: string;
+  detail: string;
+}
+
+export interface PipelineSnapshot {
+  incidentId: string;
+  activeStage: AgentId | "gateway" | "orchestrator";
+  gateway: { title: string; summary: string };
+  orchestrator: { title: string; summary: string };
+  agents: AgentRun[];
+  ingest: GatewayEvent[];
+  detection: DetectionVerdict | null;
+}
+
 export interface WorldState {
   now: number;
   region: string;
@@ -198,4 +324,5 @@ export interface WorldState {
   incidents: Incident[];
   fleet: FleetSnapshot;
   alerts: TimelineEvent[];
+  pipeline: PipelineSnapshot | null;
 }

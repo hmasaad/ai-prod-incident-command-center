@@ -2,14 +2,18 @@
 
 import Link from "next/link";
 import { DEPLOY_AT } from "@/lib/clock";
+import { isClosed } from "@/lib/platform/machine";
 import { formatDelta, formatDuration, formatNumber, formatPct, formatTime } from "@/lib/format";
 import type { WorldState } from "@/lib/types";
 import { ConfidenceBar, HealthDot, MetricChart, SevBadge, StatusBadge, TopBar } from "./chrome";
+import { DetectionBoard } from "./detection-board";
 import { IconBolt } from "./icons";
+import { PipelineBoard } from "./pipeline-board";
+import { StateMachineBoard } from "./state-machine-board";
 import { resetWorld } from "./use-command-state";
 
 export function CommandCenter({ state }: { state: WorldState }) {
-  const open = state.incidents.filter((i) => i.status !== "resolved");
+  const open = state.incidents.filter((i) => !isClosed(i.status));
   const primary = state.incidents.find((i) => i.id === "INC-4821") ?? state.incidents[0];
   const last = state.metrics[state.metrics.length - 1];
   const spark = state.metrics.filter((m) => m.ts >= DEPLOY_AT - 25 * 60_000);
@@ -29,6 +33,24 @@ export function CommandCenter({ state }: { state: WorldState }) {
         <FleetCell label="Database connections" value={formatDelta(state.fleet.dbConnDeltaPct)} hot={state.fleet.dbConnDeltaPct > 40} />
         <FleetCell label="Crash rate" value={formatDelta(state.fleet.crashDeltaPct)} hot={state.fleet.crashDeltaPct > 50} />
       </section>
+
+      {state.pipeline && (
+        <div className="border-b border-line">
+          <PipelineBoard pipeline={state.pipeline} compact />
+        </div>
+      )}
+
+      {primary?.detection && (
+        <div className="border-b border-line">
+          <DetectionBoard detection={primary.detection} />
+        </div>
+      )}
+
+      {primary && (
+        <div className="border-b border-line">
+          <StateMachineBoard incident={primary} compact />
+        </div>
+      )}
 
       <div className="grid gap-0 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
         <div className="border-b border-line lg:border-b-0 lg:border-r">
@@ -56,7 +78,7 @@ export function CommandCenter({ state }: { state: WorldState }) {
                     <StatusBadge status={inc.status} />
                   </div>
                   <span className="mono text-[11px] text-faint">
-                    {inc.status === "resolved"
+                    {isClosed(inc.status)
                       ? "closed"
                       : formatDuration(state.now - inc.startedAt)}
                   </span>
