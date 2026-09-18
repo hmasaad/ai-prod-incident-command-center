@@ -1,3 +1,10 @@
+import {
+  COMPLAINTS_AT,
+  DB_CPU_AT,
+  DEPLOY_AT,
+  INCIDENT_AT,
+  LATENCY_AT,
+} from "../clock";
 import type { ActionType, GatewayEvent } from "../types";
 
 let seq = 0;
@@ -54,6 +61,11 @@ export function ingestAction(ts: number, type: ActionType): GatewayEvent {
       title: "Incident escalated",
       detail: "Machine → ESCALATED. Next-level on-call paged.",
     },
+    reject_remediation: {
+      source: "human",
+      title: "Commander rejected playbook",
+      detail: "Gateway recorded the reject. Remediation agent will not execute.",
+    },
   };
   const row = map[type];
   return makeGatewayEvent(ts, row.source, row.title, row.detail);
@@ -77,17 +89,16 @@ export function ingestTick(ts: number, errorRate: number, rollbackApplied: boole
 }
 
 export function seedIngest(now: number): GatewayEvent[] {
-  return [
-    makeGatewayEvent(now - 26 * 60_000, "deploy", "Deploy v2.8.14 completed", "Payments API baked to 100% after green canaries."),
-    makeGatewayEvent(now - 25 * 60_000, "alerts", "http_5xx_rate 12.4% vs 0.3%", "Detection agent consumed payments-api sample (+4033%)."),
-    makeGatewayEvent(now - 25 * 60_000, "logs", "PoolCheckoutTimeout burst", "Application logs on payments-api and auth-api."),
-    makeGatewayEvent(now - 24 * 60_000, "errors", "Crash rate +180%", "Error tracking: worker restarts on payments-api-7b9c."),
-    makeGatewayEvent(now - 24 * 60_000, "database", "pg-payments-main pool", "Active connections 148 vs 78 baseline."),
-    makeGatewayEvent(now - 24 * 60_000, "cloud", "us-east-1 health", "No AWS event. Not a region outage."),
-    makeGatewayEvent(now - 25 * 60_000, "alerts", "INC-4821 opened · SEV-1", "Actual incident, not noise. 94% · Payments API · 10:42."),
-    makeGatewayEvent(now - 22 * 60_000, "metrics", "Pool + crash correlated", "Investigation agent attached logs and traces."),
+  const events = [
+    makeGatewayEvent(DEPLOY_AT, "deploy", "Deployment v2.8.14", "Payments API baked to 100% after green canaries."),
+    makeGatewayEvent(DB_CPU_AT, "database", "Database CPU begins increasing", "pg-payments-main CPU and connections leave baseline."),
+    makeGatewayEvent(LATENCY_AT, "metrics", "API latency increases", "Payments authorize p95 leaves 178ms. Pool wait in traces."),
+    makeGatewayEvent(INCIDENT_AT, "alerts", "HTTP 500 spike", "Failing-request ratio cliffs. Detection will page SEV-1."),
+    makeGatewayEvent(COMPLAINTS_AT, "slack", "Customer complaints", "Support: payment failed. Downstream of the 500s, not a cause."),
+    makeGatewayEvent(INCIDENT_AT + 62_000, "alerts", "http_5xx_rate 12.4% vs 0.3%", "Detection agent consumed payments-api sample (+4033%)."),
     makeGatewayEvent(now - 21 * 60_000, "slack", "Commander attached", "Communication agent: Maya Chen IC · Jordan Blake comms."),
   ];
+  return events.filter((e) => e.ts <= now).sort((a, b) => b.ts - a.ts);
 }
 
 export function pushIngest(existing: GatewayEvent[], event: GatewayEvent, cap = 12) {

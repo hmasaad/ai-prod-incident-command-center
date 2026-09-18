@@ -1,12 +1,18 @@
 /** Frozen narrative origin so INC-4821 starts at 10:42 UTC as specified. */
 export const DAY = Date.parse("2026-09-14T00:00:00Z");
-export const DEPLOY_AT = Date.parse("2026-09-14T10:38:00Z");
+export const DEPLOY_AT = Date.parse("2026-09-14T10:31:00Z");
+export const DB_CPU_AT = Date.parse("2026-09-14T10:35:00Z");
+export const LATENCY_AT = Date.parse("2026-09-14T10:39:00Z");
 export const INCIDENT_AT = Date.parse("2026-09-14T10:42:00Z");
+export const COMPLAINTS_AT = Date.parse("2026-09-14T10:44:00Z");
+export const CORRELATED_AT = Date.parse("2026-09-14T10:44:00Z");
+export const SATURATION_AT = Date.parse("2026-09-14T10:45:00Z");
 export const DETECTED_AT = Date.parse("2026-09-14T10:43:02Z");
 export const INVESTIGATED_AT = Date.parse("2026-09-14T10:46:18Z");
 export const TRIAGED_AT = Date.parse("2026-09-14T10:43:18Z");
 export const INVESTIGATION_STARTED_AT = Date.parse("2026-09-14T10:43:40Z");
 export const RCA_AT = INVESTIGATED_AT;
+export const BLAST_AT = Date.parse("2026-09-14T10:46:42Z");
 export const REMEDIATION_PENDING_AT = Date.parse("2026-09-14T10:46:58Z");
 export const VIEWER_START = Date.parse("2026-09-14T11:08:00Z");
 export const METRIC_START = Date.parse("2026-09-14T09:30:00Z");

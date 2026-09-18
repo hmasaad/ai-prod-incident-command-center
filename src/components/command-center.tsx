@@ -1,18 +1,31 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { DEPLOY_AT } from "@/lib/clock";
 import { isClosed } from "@/lib/platform/machine";
 import { formatDelta, formatDuration, formatNumber, formatPct, formatTime } from "@/lib/format";
 import type { WorldState } from "@/lib/types";
 import { ConfidenceBar, HealthDot, MetricChart, SevBadge, StatusBadge, TopBar } from "./chrome";
 import { DetectionBoard } from "./detection-board";
+import { InvestigationBoard } from "./investigation-board";
+import { CommsBoard } from "./comms-board";
+import { RcaBoard } from "./rca-board";
+import { MemoryBoard } from "./memory-board";
+import { BlastBoard } from "./blast-board";
+import { RemediationBoard } from "./remediation-board";
+import { SecurityBoard } from "./security-board";
+import { PostmortemBoard } from "./postmortem-board";
 import { IconBolt } from "./icons";
 import { PipelineBoard } from "./pipeline-board";
 import { StateMachineBoard } from "./state-machine-board";
-import { resetWorld } from "./use-command-state";
+import { EvalBoard } from "./eval-board";
+import { AutonomyBoard } from "./autonomy-board";
+import { StackBoard } from "./stack-board";
+import { resetWorld, rerunEvals } from "./use-command-state";
 
 export function CommandCenter({ state }: { state: WorldState }) {
+  const [evalBusy, setEvalBusy] = useState(false);
   const open = state.incidents.filter((i) => !isClosed(i.status));
   const primary = state.incidents.find((i) => i.id === "INC-4821") ?? state.incidents[0];
   const last = state.metrics[state.metrics.length - 1];
@@ -40,9 +53,82 @@ export function CommandCenter({ state }: { state: WorldState }) {
         </div>
       )}
 
+      {state.stack && (
+        <div className="border-b border-line">
+          <StackBoard stack={state.stack} />
+        </div>
+      )}
+
+      {state.autonomy && (
+        <div className="border-b border-line">
+          <AutonomyBoard report={state.autonomy} />
+        </div>
+      )}
+
+      {state.evals && (
+        <div className="border-b border-line">
+          <EvalBoard
+            report={state.evals}
+            busy={evalBusy}
+            onRerun={() => {
+              setEvalBusy(true);
+              void rerunEvals().finally(() => setEvalBusy(false));
+            }}
+          />
+        </div>
+      )}
+
       {primary?.detection && (
         <div className="border-b border-line">
           <DetectionBoard detection={primary.detection} />
+        </div>
+      )}
+
+      {primary && (
+        <div className="border-b border-line">
+          <InvestigationBoard investigation={primary.investigation} incidentId={primary.id} />
+        </div>
+      )}
+
+      {primary?.comms && (
+        <div className="border-b border-line">
+          <CommsBoard comms={primary.comms} />
+        </div>
+      )}
+
+      {primary?.rca && (
+        <div className="border-b border-line">
+          <RcaBoard rca={primary.rca} />
+        </div>
+      )}
+
+      {primary?.memory && (
+        <div className="border-b border-line">
+          <MemoryBoard memory={primary.memory} compact />
+        </div>
+      )}
+
+      {primary?.blast && (
+        <div className="border-b border-line">
+          <BlastBoard blast={primary.blast} />
+        </div>
+      )}
+
+      {primary?.remediation && (
+        <div className="border-b border-line">
+          <RemediationBoard remediation={primary.remediation} />
+        </div>
+      )}
+
+      {state.pipeline?.security && (
+        <div className="border-b border-line">
+          <SecurityBoard security={state.pipeline.security} />
+        </div>
+      )}
+
+      {primary?.postmortem && (
+        <div className="border-b border-line">
+          <PostmortemBoard postmortem={primary.postmortem} compact />
         </div>
       )}
 
@@ -107,10 +193,10 @@ export function CommandCenter({ state }: { state: WorldState }) {
                 <span className="text-sm font-medium">{primary.impact}</span>
               </div>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-[12px]">
-                <BriefRow label="Affected" value={primary.affectedServiceIds.map(prettyService).join(", ")} />
+                <BriefRow label="Affected" value={(primary.blast?.services.filter((s) => s.mark === "affected").map((s) => s.name) ?? primary.affectedServiceIds.map(prettyService)).join(", ")} />
                 <BriefRow label="Started" value={formatTime(primary.startedAt)} />
                 <BriefRow label="Likely cause" value={primary.investigation.likelyCause} />
-                <BriefRow label="Blast radius" value={`~${formatNumber(primary.investigation.blastRadius.users)} users`} />
+                <BriefRow label="Blast radius" value={`~${formatNumber(primary.blast?.users ?? primary.investigation.blastRadius.users)} users`} />
                 <BriefRow label="Recommended" value={primary.investigation.recommendedAction} />
                 <div>
                   <div className="kicker mb-1">Confidence</div>

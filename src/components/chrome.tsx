@@ -58,7 +58,7 @@ export function TopBar({
         </div>
         <div>
           <div className="text-sm font-medium tracking-tight">Incident Command Center</div>
-          <div className="kicker">AI production commander · gateway · orchestrator · agents</div>
+          <div className="kicker">AI production commander · security gateway · orchestrator · agents</div>
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-4 text-[12px] text-muted">

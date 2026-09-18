@@ -1,7 +1,7 @@
 import type { AgentRun, AgentRunStatus, PipelineSnapshot } from "@/lib/types";
 import { formatTime } from "@/lib/format";
 
-const WAVE1: AgentRun["id"][] = ["detection", "investigation", "communication"];
+const WAVE1: AgentRun["id"][] = ["detection", "investigation", "communication", "memory"];
 const WAVE2: AgentRun["id"][] = [
   "root-cause",
   "blast-radius",
@@ -41,8 +41,31 @@ export function PipelineBoard({
         />
       </div>
 
+      {pipeline.security && (
+        <div className="mt-2 border border-line px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="kicker">Egress · Security Gateway</span>
+            <span className={`mono text-[10px] uppercase ${pipeline.security.execute ? "text-ok" : "text-sev2"}`}>
+              Execute? {pipeline.security.execute ? "yes" : "no"}
+            </span>
+          </div>
+          <div className="mt-1 text-[12px] font-medium">{pipeline.security.title}</div>
+          <p className="mt-1 text-[11px] leading-4 text-muted">{pipeline.security.answer}</p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {pipeline.security.layers
+              .filter((l) => l.id === "identity" || l.id === "policy" || l.id === "risk")
+              .map((l) => (
+                <span key={l.id} className="border border-line px-2 py-1 text-[10px] uppercase tracking-wide text-muted">
+                  {l.title}
+                  <span className="ml-1 text-faint">{l.status}</span>
+                </span>
+              ))}
+          </div>
+        </div>
+      )}
+
       <div className="kicker mb-2 mt-4">Wave 1 · parallel</div>
-      <div className="grid gap-2 sm:grid-cols-3">
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         {WAVE1.map((id) => (
           <AgentNode key={id} agent={byId[id]} active={pipeline.activeStage === id} />
         ))}

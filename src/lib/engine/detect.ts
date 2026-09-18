@@ -17,7 +17,7 @@ export function latestMetrics(metrics: MetricSample[]) {
 }
 
 export function baselineMetrics(metrics: MetricSample[], now: number) {
-  const window = metrics.filter((m) => m.ts < INCIDENT_AT && m.ts > now - 90 * 60_000);
+  const window = metrics.filter((m) => m.ts < DEPLOY_AT && m.ts > now - 90 * 60_000);
   const src = window.length > 8 ? window : metrics.slice(0, 12);
   const avg = (fn: (m: MetricSample) => number) =>
     src.reduce((s, m) => s + fn(m), 0) / Math.max(1, src.length);
@@ -25,6 +25,7 @@ export function baselineMetrics(metrics: MetricSample[], now: number) {
     errorRate: avg((m) => m.errorRate),
     latencyP95: avg((m) => m.latencyP95),
     dbConnections: avg((m) => m.dbConnections),
+    dbCpu: avg((m) => m.dbCpu ?? 22),
     crashRate: avg((m) => m.crashRate),
     http500Index: avg((m) => m.http500Index),
   };
@@ -40,7 +41,7 @@ export function computeFleet(metrics: MetricSample[], now: number): FleetSnapsho
     dbConnDeltaPct: delta(last.dbConnections, base.dbConnections),
     crashDeltaPct: delta(last.crashRate, base.crashRate),
     failingRequestPct: last.errorRate,
-    affectedUsers: Math.round(18400 * Math.min(1.15, last.errorRate / 27)),
+    affectedUsers: Math.round(18423 * Math.min(1.15, last.errorRate / 27)),
   };
 }
 
@@ -84,7 +85,8 @@ export interface DetectInput {
 export function detectIncident(input: DetectInput): DetectionVerdict {
   if (input.incidentId === "INC-4818") return detect4818();
   if (input.incidentId === "INC-4812") return detect4812();
-  return detect4821(input);
+  if (input.incidentId === "INC-4821") return detect4821(input);
+  return detectGeneric(input);
 }
 
 function detect4821(input: DetectInput): DetectionVerdict {
@@ -269,6 +271,60 @@ function detect4812(): DetectionVerdict {
       { source: "deploy", label: "Deployment events", firing: true, detail: "Auth v4.1.2 key-size change preceded the eviction storm." },
       { source: "database", label: "Database metrics", firing: false, detail: "Postgres not in the path." },
       { source: "cloud", label: "Cloud events", firing: false, detail: "No cloud provider event." },
+    ],
+  };
+}
+
+/**
+ * Classifier for synthetic / unknown incidents. Same family math as INC-4821,
+ * without the frozen payments copy. Unknown IDs must not inherit INC-4821.
+ */
+function detectGeneric(input: DetectInput): DetectionVerdict {
+  const last = latestMetrics(input.metrics);
+  const base = baselineMetrics(input.metrics, input.now);
+  const windowStart = input.now - 20 * 60_000;
+  const recentLogs = input.logs.filter((l) => l.ts >= windowStart);
+  const errors = recentLogs.filter((l) => l.level === "error" || l.level === "fatal");
+  const fatals = recentLogs.filter((l) => l.level === "fatal");
+  const deploy = input.deployments[0];
+  const cliff = input.metrics.find((m) => m.errorRate >= 8)?.ts ?? input.now;
+  const deployLagMin = deploy ? Math.round((cliff - deploy.completedAt) / 60_000) : 99;
+
+  const alertsFiring = last.errorRate >= 8;
+  const logsFiring = errors.length >= 4;
+  const errorsFiring = last.crashRate >= base.crashRate * 1.5 || fatals.length > 0;
+  const infraFiring = last.latencyP95 >= base.latencyP95 * 1.8;
+  const deployFiring = deployLagMin >= 0 && deployLagMin <= 15;
+  const dbFiring = last.dbConnections >= base.dbConnections * 1.4;
+  const families = [alertsFiring, logsFiring, errorsFiring, infraFiring, deployFiring, dbFiring].filter(Boolean).length;
+  const incident = families >= 3 && alertsFiring;
+
+  return {
+    incidentId: input.incidentId,
+    verdict: incident ? "incident" : "noisy",
+    question: QUESTION,
+    answer: incident
+      ? `Actual incident. ${families} families corroborate the sample. Not a flappy monitor.`
+      : `Weak corroboration (${families}/7 families). Hold the page.`,
+    severity: last.errorRate >= 15 ? "SEV-1" : last.errorRate >= 5 ? "SEV-2" : "SEV-3",
+    confidence: incident ? Math.min(0.94, 0.7 + families * 0.04) : Math.min(0.55, 0.2 + families * 0.08),
+    affected: input.services[0] ? [input.services[0].name] : ["unknown"],
+    startedAt: cliff,
+    lead: {
+      service: input.services[0]?.id ?? "unknown",
+      metric: "http_5xx_rate",
+      current: `${last.errorRate.toFixed(1)}%`,
+      baseline: `${base.errorRate.toFixed(1)}%`,
+      increase: increase(last.errorRate, base.errorRate),
+    },
+    signals: [
+      { source: "alerts", label: "Monitoring alerts", firing: alertsFiring, detail: `Error rate ${last.errorRate.toFixed(1)}% vs ${base.errorRate.toFixed(1)}%.` },
+      { source: "logs", label: "Application logs", firing: logsFiring, detail: `${errors.length} error/fatal lines in the detect window.` },
+      { source: "errors", label: "Error tracking", firing: errorsFiring, detail: `Crash rate ${last.crashRate.toFixed(2)} vs ${base.crashRate.toFixed(2)}.` },
+      { source: "infra", label: "Infrastructure metrics", firing: infraFiring, detail: `p95 ${Math.round(last.latencyP95)}ms vs ${Math.round(base.latencyP95)}ms.` },
+      { source: "deploy", label: "Deployment events", firing: deployFiring, detail: deploy ? `${deploy.version} ${deployLagMin}m before the cliff.` : "No recent deploy." },
+      { source: "database", label: "Database metrics", firing: dbFiring, detail: `Connections ${Math.round(last.dbConnections)} vs ${Math.round(base.dbConnections)}.` },
+      { source: "cloud", label: "Cloud events", firing: false, detail: "No cloud health event." },
     ],
   };
 }

@@ -1,16 +1,28 @@
 import {
+  BLAST_AT,
   DAY,
+  DB_CPU_AT,
   DEPLOY_AT,
   DETECTED_AT,
   INCIDENT_AT,
   INVESTIGATED_AT,
+  LATENCY_AT,
+  COMPLAINTS_AT,
   METRIC_START,
   METRIC_STEP,
   mulberry32,
+  REMEDIATION_PENDING_AT,
   VIEWER_START,
 } from "./clock";
 import { investigate } from "./engine/correlate";
 import { computeFleet, detectIncident, serviceHealth } from "./engine/detect";
+import { analyzeBlast } from "./engine/blast-radius";
+import { analyzeRca } from "./engine/rca";
+import { analyzeRemediation } from "./engine/remediate";
+import { buildHumanLoop } from "./engine/human-loop";
+import { draftComms } from "./engine/comms";
+import { buildPostmortem } from "./engine/postmortem";
+import { recallMemory } from "./engine/memory";
 import { seedMachine } from "./platform/machine";
 import type {
   Deployment,
@@ -27,6 +39,28 @@ export interface SimFlags {
   disableFlagAt?: number;
 }
 
+function finishIncident(incident: Omit<Incident, "humanLoop" | "comms" | "postmortem" | "memory">): Incident {
+  const humanLoop = buildHumanLoop(incident);
+  const comms = draftComms({
+    incidentId: incident.id,
+    status: incident.status,
+    severity: incident.severity,
+    detection: incident.detection,
+    rca: incident.rca,
+    blast: incident.blast,
+    remediation: incident.remediation,
+    rollbackApplied: incident.rollbackApplied,
+  });
+  const draft = { ...incident, humanLoop, comms };
+  const postmortem = buildPostmortem(draft, incident.detectedAt);
+  return { ...draft, postmortem, memory: recallMemory({ ...draft, postmortem }, incident.detectedAt) };
+}
+
+function unitRamp(ts: number, start: number, duration: number) {
+  if (ts < start) return 0;
+  return Math.min(1, (ts - start) / Math.max(1, duration));
+}
+
 function metricAt(ts: number, flags: SimFlags, rand: () => number): MetricSample {
   const n = () => (rand() - 0.5) * 2;
   const recovered =
@@ -40,39 +74,37 @@ function metricAt(ts: number, flags: SimFlags, rand: () => number): MetricSample
     ts >= flags.mitigateAt &&
     flags.rollbackAt === undefined;
 
-  let errorRate = 0.55 + n() * 0.08;
-  let latencyP95 = 178 + n() * 12;
-  let dbConnections = 78 + n() * 6;
-  let crashRate = 0.22 + n() * 0.04;
-  let http500Index = 1 + n() * 0.05;
-  let rps = 1480 + n() * 40;
+  const dbWarm = recovered ? 0 : unitRamp(ts, DB_CPU_AT, INCIDENT_AT - DB_CPU_AT);
+  const latWarm = recovered ? 0 : unitRamp(ts, LATENCY_AT, INCIDENT_AT - LATENCY_AT);
+  const cliff = recovered ? 0 : unitRamp(ts, INCIDENT_AT, 2 * 60_000);
 
-  if (ts >= INCIDENT_AT && !recovered) {
-    const ramp = Math.min(1, (ts - INCIDENT_AT) / (2 * 60_000));
-    errorRate = 0.55 + 26.5 * ramp + n() * 0.4;
-    latencyP95 = 178 + 447 * ramp + n() * 18;
-    dbConnections = 78 + 70 * ramp + n() * 4;
-    crashRate = 0.22 + 0.4 * ramp + n() * 0.03;
-    http500Index = 1 + 3.4 * ramp + n() * 0.08;
-    rps = 1480 - 180 * ramp;
-    if (mitigated) {
-      errorRate = 7.8 + n() * 0.4;
-      latencyP95 = 310 + n() * 16;
-      dbConnections = 126 + n() * 5;
-      crashRate = 0.35 + n() * 0.02;
-      http500Index = 2.1 + n() * 0.06;
-    }
-    if (recovering) {
-      const t = (ts - flags.rollbackAt!) / (3 * 60_000);
-      errorRate = 27 * (1 - t) + 0.7 * t;
-      latencyP95 = 625 * (1 - t) + 185 * t;
-      dbConnections = 148 * (1 - t) + 80 * t;
-      crashRate = 0.62 * (1 - t) + 0.22 * t;
-      http500Index = 4.4 * (1 - t) + 1 * t;
-    }
+  let errorRate = 0.55 + n() * 0.08 + 26.5 * cliff;
+  let latencyP95 = 178 + n() * 12 + 140 * latWarm + 307 * cliff;
+  let dbConnections = 78 + n() * 6 + 40 * dbWarm + 30 * cliff;
+  let dbCpu = 22 + n() * 1.4 + 28 * dbWarm + 18 * cliff;
+  let crashRate = 0.22 + n() * 0.04 + 0.4 * cliff;
+  let http500Index = 1 + n() * 0.05 + 3.4 * cliff;
+  const rps = 1480 + n() * 40 - 180 * cliff;
+
+  if (mitigated && ts >= INCIDENT_AT && !recovered) {
+    errorRate = 7.8 + n() * 0.4;
+    latencyP95 = 310 + n() * 16;
+    dbConnections = 126 + n() * 5;
+    dbCpu = 48 + n() * 2;
+    crashRate = 0.35 + n() * 0.02;
+    http500Index = 2.1 + n() * 0.06;
+  }
+  if (recovering) {
+    const t = (ts - flags.rollbackAt!) / (3 * 60_000);
+    errorRate = 27 * (1 - t) + 0.7 * t;
+    latencyP95 = 625 * (1 - t) + 185 * t;
+    dbConnections = 148 * (1 - t) + 80 * t;
+    dbCpu = 68 * (1 - t) + 24 * t;
+    crashRate = 0.62 * (1 - t) + 0.22 * t;
+    http500Index = 4.4 * (1 - t) + 1 * t;
   }
 
-  return { ts, errorRate, latencyP95, dbConnections, crashRate, http500Index, rps };
+  return { ts, errorRate, latencyP95, dbConnections, dbCpu, crashRate, http500Index, rps };
 }
 
 export function buildMetrics(now: number, flags: SimFlags): MetricSample[] {
@@ -91,6 +123,7 @@ export function baseServices(): Service[] {
     { id: "auth-api", name: "Auth API", layer: "api", health: "degraded", errorRate: 14.2, latencyP95: 540, rps: 980, owners: ["Identity"], dependsOn: ["session-redis", "payments-db"], version: "v4.1.2" },
     { id: "payments-api", name: "Payments API", layer: "api", health: "outage", errorRate: 27.4, latencyP95: 630, rps: 620, owners: ["Payments"], dependsOn: ["payments-db", "kafka-events"], version: "v2.8.14" },
     { id: "checkout-api", name: "Checkout API", layer: "api", health: "degraded", errorRate: 4.1, latencyP95: 410, rps: 540, owners: ["Commerce"], dependsOn: ["payments-api", "inventory-api"], version: "v7.3.0" },
+    { id: "profile-api", name: "Profile API", layer: "api", health: "healthy", errorRate: 0.2, latencyP95: 85, rps: 220, owners: ["Identity"], dependsOn: ["auth-api"], version: "v2.4.1" },
     { id: "inventory-api", name: "Inventory API", layer: "api", health: "healthy", errorRate: 0.4, latencyP95: 120, rps: 300, owners: ["Commerce"], dependsOn: ["payments-db"], version: "v3.9.8" },
     { id: "notify-api", name: "Notify API", layer: "api", health: "healthy", errorRate: 0.3, latencyP95: 90, rps: 150, owners: ["Comms"], dependsOn: ["kafka-events"], version: "v1.6.2" },
     { id: "payments-db", name: "payments-db", layer: "data", health: "degraded", errorRate: 0, latencyP95: 24, rps: 0, owners: ["SRE"], dependsOn: [], version: "pg-15.4" },
@@ -184,9 +217,12 @@ export function buildLogs(now: number, flags: SimFlags): LogEvent[] {
   };
 
   push(DEPLOY_AT + 5_000, "payments-api", "info", "Deploy v2.8.14 healthy on 12/12 canaries — baking to 100%");
+  push(DB_CPU_AT + 12_000, "payments-db", "warn", "cpu 41% and climbing on pg-payments-main after v2.8.14 checkout change");
+  push(LATENCY_AT + 8_000, "payments-api", "warn", "authorize p95 310ms and rising — pool wait showing in traces");
   push(INCIDENT_AT + 8_000, "payments-api", "error", "remaining connection slots are reserved for SUPERUSER, too many clients");
   push(INCIDENT_AT + 19_000, "payments-api", "error", "PoolCheckoutTimeout after 5000ms acquiring client from payments-db");
   push(INCIDENT_AT + 27_000, "auth-api", "error", "session persist failed: connection pool exhausted on pg-payments-main");
+  push(COMPLAINTS_AT + 6_000, "checkout-api", "warn", "customer support: payment failed retries climbing in EU+US");
   push(INCIDENT_AT + 41_000, "payments-api", "fatal", "worker restart: checkout wait exceeded request budget");
   push(INCIDENT_AT + 58_000, "checkout-api", "warn", "payment authorize 5xx from payments-api — retrying");
   push(INCIDENT_AT + 90_000, "payments-api", "error", "PoolCheckoutTimeout after 5000ms acquiring client from payments-db");
@@ -232,8 +268,30 @@ export function buildIncident(now: number, services: Service[], flags: SimFlags)
     services,
     rollbackApplied: Boolean(flags.rollbackAt),
   });
+  const rca = analyzeRca({
+    incidentId: "INC-4821",
+    now,
+    metrics,
+    logs,
+    deployments,
+    services,
+    rollbackApplied: Boolean(flags.rollbackAt),
+    mitigationApplied: Boolean(flags.mitigateAt),
+  });
+  const blast = analyzeBlast({
+    incidentId: "INC-4821",
+    services,
+    failingRequestPct: metrics.at(-1)?.errorRate ?? 27,
+    rollbackApplied: Boolean(flags.rollbackAt),
+  });
+  const remediation = analyzeRemediation({
+    incidentId: "INC-4821",
+    status,
+    rollbackApplied: Boolean(flags.rollbackAt),
+    mitigationApplied: Boolean(flags.mitigateAt),
+  });
 
-  return {
+  return finishIncident({
     id: "INC-4821",
     title: "Payments and Auth API failure spike",
     severity: "SEV-1",
@@ -245,27 +303,38 @@ export function buildIncident(now: number, services: Service[], flags: SimFlags)
     commander: "Maya Chen",
     rollbackApplied: Boolean(flags.rollbackAt),
     mitigationApplied: Boolean(flags.mitigateAt),
+    remediationRejected: false,
     machine,
     detection,
+    rca,
+    blast,
+    remediation,
     brief: {
       summary:
         "Payments API v2.8.14 exhausted the shared Postgres pool. Auth is failing as collateral. Highest-confidence fix is an immediate rollback to v2.8.13.",
       impact: "27% of API requests failing",
-      users: 18400,
+      users: 18423,
       confidence: 0.91,
       likelyCause: "Deployment v2.8.14",
     },
     investigation,
     timeline: [
       { id: "t1", ts: DEPLOY_AT, kind: "note", title: "Deploy v2.8.14 complete", detail: "Payments API baked to 100% after green canaries.", actor: "spinnaker" },
-      { id: "t2", ts: INCIDENT_AT, kind: "detect", title: "Error cliff on Payments API", detail: "HTTP 500s and pool timeouts jump together. Auth follows 20s later.", actor: "detector" },
+      { id: "t-db", ts: DB_CPU_AT, kind: "investigate", title: "Database CPU begins increasing", detail: "pg-payments-main CPU and active connections leave baseline. Precursor, not the page.", actor: "investigator" },
+      { id: "t-lat", ts: LATENCY_AT, kind: "investigate", title: "API latency increases", detail: "Payments authorize p95 leaves the 178ms baseline. Pool wait is in the traces.", actor: "investigator" },
+      { id: "t2", ts: INCIDENT_AT, kind: "detect", title: "HTTP 500 spike", detail: "Failing-request ratio cliffs. Auth follows 20s later as collateral.", actor: "detector" },
+      { id: "t-complaints", ts: COMPLAINTS_AT, kind: "coordinate", title: "Customer complaints", detail: "Support volume on payment failed. Comms drafting status.", actor: "comms" },
       { id: "t3", ts: DETECTED_AT, kind: "detect", title: "INC-4821 opened · SEV-1", detail: "Detection agent: actual incident, not a noisy alert. 94% · Payments API · started 10:42. Opening sample http_5xx_rate 12.4% vs 0.3% baseline.", actor: "detector" },
-      { id: "t4", ts: INVESTIGATED_AT, kind: "investigate", title: "Commander brief ready", detail: "Payments API v2.8.14 exhausted the shared Postgres pool. Auth is failing as collateral. Highest-confidence fix is an immediate rollback to v2.8.13.", actor: "investigator-agent" },
+      { id: "t4", ts: INVESTIGATED_AT, kind: "investigate", title: "Causal chain named", detail: "Deploy v2.8.14 → new DB query → pool exhaustion → API timeout → HTTP 500 → payment failures.", actor: "investigator-agent" },
+      { id: "t-rca", ts: INVESTIGATED_AT + 12_000, kind: "investigate", title: "RCA engine ranked candidates", detail: "v2.8.14 91% supported. DB overload 78% contributing. Network 12% and external API 6% disconfirmed. Narration bound to the table.", actor: "root-cause" },
+      { id: "t-blast", ts: BLAST_AT, kind: "investigate", title: "Blast radius named", detail: "Payments → Checkout → Mobile App → premium users. 18,423 potentially affected. Auth, Profile, Notifications, EU, APAC outside the blast.", actor: "blast-radius" },
+      { id: "t-comms", ts: BLAST_AT + 8_000, kind: "coordinate", title: "Audience updates drafted", detail: "Engineers · management · customers. Same incident, different communication. Customers do not hear v2.8.14.", actor: "communication" },
+      { id: "t-remediate", ts: REMEDIATION_PENDING_AT, kind: "respond", title: "Remediation playbook ready", detail: "AI: Rollback v2.8.14 · Risk: MEDIUM · Policy: human approval required. Agent will not execute.", actor: "remediation" },
       { id: "t5", ts: INVESTIGATED_AT + 40_000, kind: "coordinate", title: "Maya Chen attached as commander", detail: "Jordan Blake on comms. Payments on-call acknowledged.", actor: "pagerduty" },
     ],
     actors: [
       { id: "h1", kind: "human", name: "Maya Chen", role: "Incident commander", status: "active" },
-      { id: "h2", kind: "human", name: "Jordan Blake", role: "Comms", status: "drafting customer status" },
+      { id: "h2", kind: "human", name: "Jordan Blake", role: "Comms", status: "three-audience updates live" },
       { id: "h3", kind: "human", name: "Priya Nair", role: "Payments author", status: "paged" },
       { id: "a1", kind: "agent", name: "detector", role: "Detect", status: "watching error, latency, pool, crash" },
       { id: "a2", kind: "agent", name: "investigator", role: "Investigate", status: `${(investigation.confidence * 100).toFixed(0)}% on ${investigation.likelyCause}` },
@@ -275,7 +344,7 @@ export function buildIncident(now: number, services: Service[], flags: SimFlags)
       { id: "s3", kind: "service", name: "payments-db", role: "Shared pool", status: flags.rollbackAt ? "headroom restored" : "slots exhausted" },
     ],
     actions: [],
-  };
+  });
 }
 
 export function secondaryIncidents(): Incident[] {
@@ -292,6 +361,7 @@ export function secondaryIncidents(): Incident[] {
       commander: "Samira Ott",
       rollbackApplied: false,
       mitigationApplied: false,
+      remediationRejected: false,
       machine: seedMachine("INC-4818"),
       detection: detectIncident({
         incidentId: "INC-4818",
@@ -300,6 +370,23 @@ export function secondaryIncidents(): Incident[] {
         logs: [],
         deployments: [],
         services: [],
+      }),
+      rca: analyzeRca({
+        incidentId: "INC-4818",
+        now: Date.parse("2026-09-14T11:08:00Z"),
+        metrics: [],
+        logs: [],
+        deployments: [],
+        services: [],
+      }),
+      blast: analyzeBlast({
+        incidentId: "INC-4818",
+        services: [],
+        failingRequestPct: 4,
+      }),
+      remediation: analyzeRemediation({
+        incidentId: "INC-4818",
+        status: "NEED_HUMAN_INPUT",
       }),
       brief: {
         summary: "Flag new-tax-engine is still off globally but a 5% experiment leaked to EU carts. Not on the payments path.",
@@ -320,6 +407,14 @@ export function secondaryIncidents(): Incident[] {
         confidence: 0.64,
         likelyCause: "new-tax-engine experiment leak",
         recommendedAction: "Disable new-tax-engine flag",
+        beats: [
+          { id: "b1", at: Date.parse("2026-09-14T08:10:00Z"), title: "Flag leak", detail: "new-tax-engine 5% experiment on EU carts.", source: "git" },
+          { id: "b2", at: Date.parse("2026-09-14T08:14:00Z"), title: "Checkout p95", detail: "410ms on tax-inclusive carts.", source: "infra" },
+        ],
+        causalChain: [
+          { id: "k1", title: "new-tax-engine leak", detail: "5% experiment reached EU carts while globally off." },
+          { id: "k2", title: "Checkout latency", detail: "Tax-inclusive path regresses. Traces still missing." },
+        ],
       },
       timeline: [
         { id: "x1", ts: Date.parse("2026-09-14T08:14:00Z"), kind: "detect", title: "Checkout p95 watch fired", detail: "EU tax carts only.", actor: "detector" },
@@ -345,6 +440,7 @@ export function secondaryIncidents(): Incident[] {
       commander: "Luis Ortega",
       rollbackApplied: false,
       mitigationApplied: true,
+      remediationRejected: false,
       machine: seedMachine("INC-4812"),
       detection: detectIncident({
         incidentId: "INC-4812",
@@ -354,6 +450,24 @@ export function secondaryIncidents(): Incident[] {
         deployments: [],
         services: [],
         closed: true,
+      }),
+      rca: analyzeRca({
+        incidentId: "INC-4812",
+        now: Date.parse("2026-09-13T19:44:00Z"),
+        metrics: [],
+        logs: [],
+        deployments: [],
+        services: [],
+      }),
+      blast: analyzeBlast({
+        incidentId: "INC-4812",
+        services: [],
+        failingRequestPct: 0,
+      }),
+      remediation: analyzeRemediation({
+        incidentId: "INC-4812",
+        status: "POSTMORTEM",
+        mitigationApplied: true,
       }),
       brief: {
         summary: "Memory cap too low after key-size change. Scaled Redis and added TTL jitter in v4.1.2.",
@@ -372,12 +486,20 @@ export function secondaryIncidents(): Incident[] {
         confidence: 0.86,
         likelyCause: "Redis memory cap",
         recommendedAction: "Resolved",
+        beats: [
+          { id: "b1", at: Date.parse("2026-09-13T19:02:00Z"), title: "Redis evictions", detail: "session-redis eviction_rate 18/s.", source: "alerts" },
+          { id: "b2", at: Date.parse("2026-09-13T19:18:00Z"), title: "Scale Redis", detail: "Memory cap raised. TTL jitter in v4.1.2.", source: "deploy" },
+        ],
+        causalChain: [
+          { id: "k1", title: "Key-size change", detail: "Auth v4.1.2 wrote larger session blobs." },
+          { id: "k2", title: "Memory cap", detail: "Redis evicted; login latency only." },
+        ],
       },
       timeline: [],
       actors: [],
       actions: [],
     },
-  ];
+  ].map((incident) => finishIncident(incident as Omit<Incident, "humanLoop" | "comms" | "postmortem" | "memory">));
 }
 
 export function createWorld(now = VIEWER_START, flags: SimFlags = {}): WorldState {
@@ -400,5 +522,8 @@ export function createWorld(now = VIEWER_START, flags: SimFlags = {}): WorldStat
     fleet,
     alerts: primary.timeline.filter((e) => e.kind === "detect" || e.kind === "investigate"),
     pipeline: null,
+    evals: null,
+    autonomy: null,
+    stack: null,
   };
 }

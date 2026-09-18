@@ -1,7 +1,5 @@
 import { latestMetrics } from "../engine/detect";
-import { buildPostmortem } from "../engine/postmortem";
-import { recommend } from "../engine/recommend";
-import { agentPhase, isClosed, latestCheckpoint } from "./machine";
+import { agentPhase, latestCheckpoint } from "./machine";
 import type { AgentId, AgentRun } from "../types";
 import type { AgentContext, AgentOutput } from "./context";
 
@@ -37,18 +35,19 @@ const specs: Spec[] = [
     id: "investigation",
     name: "Investigation Agent",
     role: "Investigate",
-    consumes: "Logs / Traces",
+    consumes: "Timeline · Metrics · Logs · Git · Comms",
     run: (ctx) => {
       if (ctx.incident.status === "NEED_HUMAN_INPUT" || ctx.incident.status === "ESCALATED") {
         return {
           status: "blocked",
-          summary: "Checkpointed. Confidence below 75% — will not re-run until human input.",
+          summary: "Checkpointed. Causal chain incomplete — will not re-run until human input.",
         };
       }
-      const traces = ctx.analysis.evidence.filter((e) => e.source === "logs" || e.source === "git").length;
+      const chain = ctx.analysis.causalChain;
+      const beats = ctx.analysis.beats;
       return {
-        status: "running",
-        summary: `${traces} log/git signals. Pool timeouts on pg-payments-main; deploy a1f3c2d on the hot path.`,
+        status: "complete",
+        summary: `${beats.length}-beat timeline · ${chain.length}-step chain · ${chain[0]?.title ?? "cause"} → ${chain.at(-1)?.title ?? "impact"} · ${(ctx.analysis.confidence * 100).toFixed(0)}%`,
       };
     },
   },
@@ -56,25 +55,33 @@ const specs: Spec[] = [
     id: "communication",
     name: "Communication Agent",
     role: "Coordinate",
-    consumes: "Slack / Teams",
+    consumes: "Slack · Exec · Status page",
     run: (ctx) => {
-      const paged = ctx.incident.actions.some((a) => a.type === "page_oncall");
-      const channel = ctx.incident.actions.some((a) => a.type === "open_channel");
+      const updates = ctx.comms.updates;
+      const summary = updates.map((u) => u.audience).join(" · ");
       if (ctx.incident.status === "ESCALATED") {
-        return { status: "complete", summary: "Next-level on-call paged. Waiting on human evidence to resume." };
-      }
-      if (channel && paged) {
-        return { status: "complete", summary: "#inc-4821 open · Priya Nair acknowledged · Jordan drafting status." };
-      }
-      if (channel) {
-        return { status: "complete", summary: "#inc-4821 open. Payments on-call not yet paged from this channel." };
-      }
-      if (paged) {
-        return { status: "complete", summary: "Priya Nair paged. Slack war room still recommended." };
+        return { status: "complete", summary: `${summary}. Escalation copy live. Still three audiences.` };
       }
       return {
-        status: "running",
-        summary: `${ctx.onCall.primary} commander · ${ctx.onCall.comms} comms. Channel #inc-4821 ready to open.`,
+        status: "complete",
+        summary: `${updates.length} audiences · ${summary} — same incident, different communication.`,
+      };
+    },
+  },
+  {
+    id: "memory",
+    name: "Memory Agent",
+    role: "Recall",
+    consumes: "Closed incidents · RCA · Playbooks · Outcomes",
+    run: (ctx) => {
+      const mem = ctx.memory;
+      const top = mem.hits[0];
+      if (!top) {
+        return { status: "running", summary: `${mem.indexed} documents · no similar incident retrieved.` };
+      }
+      return {
+        status: "complete",
+        summary: `${top.id} ${Math.round(top.score * 100)}% · ${mem.indexed} documents · ${top.rca}`,
       };
     },
   },
@@ -82,12 +89,21 @@ const specs: Spec[] = [
     id: "root-cause",
     name: "Root Cause Agent",
     role: "Cause",
-    consumes: "Investigation graph",
+    consumes: "Deploys · Logs · Metrics · Traces · Git · Infra",
     run: (ctx) => {
-      const top = ctx.analysis.hypotheses[0];
+      const rca = ctx.rca;
+      const top = rca.candidates.find((c) => c.id === rca.selectedId) ?? rca.candidates[0];
+      const disconfirmed = rca.candidates.filter((c) => c.stance === "disconfirmed").length;
+      const present = rca.evidencePack.filter((e) => e.present).length;
+      if (rca.confidence < 0.75) {
+        return {
+          status: "blocked",
+          summary: `Engine will not name a cause. ${top?.candidate ?? "top"} ${Math.round(rca.confidence * 100)}% · ${present}/6 families · below 75% gate.`,
+        };
+      }
       return {
-        status: "running",
-        summary: `${ctx.analysis.likelyCause} · ${(ctx.analysis.confidence * 100).toFixed(0)}% · ${top?.kind ?? "deploy"} hypothesis leads.`,
+        status: "complete",
+        summary: `${top?.candidate ?? rca.incidentId} ${Math.round((top?.probability ?? rca.confidence) * 100)}% · ${rca.candidates.length} candidates · ${disconfirmed} disconfirmed · engine-bound`,
       };
     },
   },
@@ -95,12 +111,15 @@ const specs: Spec[] = [
     id: "blast-radius",
     name: "Blast Radius Agent",
     role: "Impact",
-    consumes: "Topology + RPS",
+    consumes: "Topology · RPS · Regions · Clients",
     run: (ctx) => {
-      const blast = ctx.analysis.blastRadius;
+      const b = ctx.blast;
+      const affected = b.services.filter((s) => s.mark === "affected").map((s) => s.name);
+      const quiet = b.services.filter((s) => s.mark === "unaffected").length;
+      const regions = b.regions.filter((r) => r.mark === "affected").map((r) => r.name);
       return {
-        status: "running",
-        summary: `~${blast.users.toLocaleString()} users · ${blast.services.join(", ")}${blast.revenuePath ? " · revenue path" : ""}.`,
+        status: "complete",
+        summary: `${b.users.toLocaleString()} ${b.segment.toLowerCase()} · ${affected.join(" + ")} · ${regions.join(", ")} · ${quiet} surfaces quiet`,
       };
     },
   },
@@ -108,21 +127,27 @@ const specs: Spec[] = [
     id: "remediation",
     name: "Remediation Agent",
     role: "Respond",
-    consumes: "Playbooks",
+    consumes: "Playbooks · Policy · Human gate",
     run: (ctx) => {
-      const rec = recommend(ctx.incident, ctx.analysis);
-      if (ctx.incident.status === "REMEDIATING" || ctx.incident.rollbackApplied) {
-        return { status: "running", summary: "Change accepted. Spinnaker is the corrective path." };
+      const r = ctx.remediation;
+      if (r.approved) {
+        return {
+          status: ctx.incident.status === "REMEDIATING" ? "running" : "complete",
+          summary:
+            ctx.incident.severity === "SEV-1"
+              ? `${r.recommendation} approved · ${r.risk} · executing — agent did not auto-run.`
+              : `${r.recommendation} · ${r.risk} · executing — policy automatic.`,
+        };
       }
-      if (ctx.incident.mitigationApplied && ctx.incident.status === "REMEDIATION_PENDING") {
+      if (r.rejected) {
         return {
           status: "blocked",
-          summary: "Mitigation landed. Corrective action still waiting on commander.",
+          summary: `${r.recommendation} rejected · ${r.risk} · still blocked — will not execute.`,
         };
       }
       return {
         status: "blocked",
-        summary: `${rec.label}. Awaiting commander approval — not auto-executed.`,
+        summary: `${r.recommendation} · ${r.risk} · ${r.policy.toLowerCase()} — not auto-executed.`,
       };
     },
   },
@@ -146,15 +171,15 @@ const specs: Spec[] = [
     id: "postmortem",
     name: "Postmortem Agent",
     role: "Learn",
-    consumes: "Timeline",
+    consumes: "Evidence · Timeline · RCA · Actions",
     run: (ctx) => {
-      if (!isClosed(ctx.incident.status)) {
-        return { status: "idle", summary: "Queued. Compiles from checkpoints + timeline after RESOLVED." };
+      const pm = ctx.postmortem;
+      if (!pm.ready) {
+        return { status: "idle", summary: "Queued. Collect evidence → timeline → cause → contributing → postmortem → actions after RESOLVED." };
       }
-      const pm = buildPostmortem(ctx.incident, ctx.now);
       return {
         status: ctx.incident.status === "POSTMORTEM" ? "complete" : "running",
-        summary: `${pm.incidentId} · ${pm.durationMin} min · ${pm.actionItems.length} action items from the timeline.`,
+        summary: `${pm.title} · ${pm.durationMin} min · ${pm.customerImpact.toLocaleString()} users · ${pm.actionItems.length} corrective actions.`,
       };
     },
   },
@@ -167,7 +192,7 @@ export function runAgents(ctx: AgentContext): AgentRun[] {
     const phase = agentPhase(state, spec.id);
     const checkpoint = latestCheckpoint(ctx.incident.machine, spec.id);
 
-    if (phase === "idle" || phase === "skipped") {
+    if ((phase === "idle" || phase === "skipped") && spec.id !== "postmortem") {
       return {
         id: spec.id,
         name: spec.name,
@@ -180,7 +205,7 @@ export function runAgents(ctx: AgentContext): AgentRun[] {
       };
     }
 
-    if (phase === "complete" && spec.id !== "detection") {
+    if (phase === "complete" && spec.id !== "detection" && spec.id !== "investigation" && spec.id !== "communication" && spec.id !== "memory" && spec.id !== "root-cause" && spec.id !== "blast-radius" && spec.id !== "remediation" && spec.id !== "postmortem") {
       return {
         id: spec.id,
         name: spec.name,
@@ -210,6 +235,7 @@ export function activeStage(agents: AgentRun[]): AgentId | "orchestrator" {
     "detection",
     "investigation",
     "communication",
+    "memory",
     "root-cause",
     "blast-radius",
     "remediation",

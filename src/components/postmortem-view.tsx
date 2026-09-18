@@ -4,6 +4,7 @@ import { formatDuration, formatTime } from "@/lib/format";
 import type { Postmortem } from "@/lib/types";
 import { SevBadge } from "./chrome";
 import { IconArrow } from "./icons";
+import { PostmortemCard } from "./postmortem-board";
 
 export function PostmortemView({ pm }: { pm: Postmortem }) {
   return (
@@ -24,11 +25,35 @@ export function PostmortemView({ pm }: { pm: Postmortem }) {
       </header>
 
       <div className="mx-auto max-w-3xl space-y-8 px-4 py-8">
-        <Section title="Summary">{pm.summary}</Section>
-        <Section title="Impact">{pm.impact}</Section>
+        <PostmortemCard pm={pm} />
+
+        <section>
+          <h2 className="kicker mb-3">Pipeline</h2>
+          <ol className="space-y-2">
+            {pm.stages.map((stage) => (
+              <li key={stage.id} className="flex items-baseline justify-between gap-3 text-[13px]">
+                <span>{stage.label}</span>
+                <span className="mono text-[11px] uppercase text-faint">{stage.status}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+
         <Section title="Root cause">{pm.rootCause}</Section>
         <Section title="Detection">{pm.detection}</Section>
         <Section title="Response">{pm.response}</Section>
+        <Section title="Impact">{pm.impact}</Section>
+
+        {pm.contributing.length > 0 && (
+          <section>
+            <h2 className="kicker mb-3">Contributing factors</h2>
+            <ul className="space-y-2 text-[13px] text-muted">
+              {pm.contributing.map((factor) => (
+                <li key={factor}>{factor}</li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <section>
           <h2 className="kicker mb-3">Timeline</h2>
@@ -62,20 +87,9 @@ export function PostmortemView({ pm }: { pm: Postmortem }) {
           </div>
         </section>
 
-        <section>
-          <h2 className="kicker mb-3">Action items</h2>
-          <ul className="divide-y divide-line border border-line">
-            {pm.actionItems.map((item) => (
-              <li key={item.item} className="flex gap-3 px-3 py-2 text-[13px]">
-                <span className="mono w-24 text-[11px] text-muted">{item.owner}</span>
-                <span>{item.item}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-
         <p className="text-[12px] text-faint">
-          Generated from the live incident timeline in {formatDuration(pm.durationMin * 60_000)}.
+          Compiled from detection, investigation, RCA, blast radius, and remediation — not an LLM asked to
+          write a postmortem. {formatDuration(pm.durationMin * 60_000)} on the card.
         </p>
       </div>
     </article>

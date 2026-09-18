@@ -9,8 +9,20 @@ import { isClosed } from "@/lib/platform/machine";
 import type { ActionType, Incident, WorldState } from "@/lib/types";
 import { ConfidenceBar, HealthDot, MetricChart, SevBadge, StatusBadge, TopBar } from "./chrome";
 import { DetectionBoard } from "./detection-board";
+import { InvestigationBoard } from "./investigation-board";
+import { CommsBoard } from "./comms-board";
+import { RcaBoard } from "./rca-board";
+import { MemoryBoard } from "./memory-board";
+import { BlastBoard } from "./blast-board";
+import { RemediationBoard } from "./remediation-board";
+import { PostmortemBoard } from "./postmortem-board";
+import { SecurityBoard } from "./security-board";
+import { HumanLoopBoard } from "./human-loop-board";
 import { PipelineBoard } from "./pipeline-board";
 import { StateMachineBoard } from "./state-machine-board";
+import { EvalBoard } from "./eval-board";
+import { AutonomyBoard } from "./autonomy-board";
+import { StackBoard } from "./stack-board";
 import { IconArrow, IconGit, IconUsers } from "./icons";
 import { runAction } from "./use-command-state";
 
@@ -23,7 +35,6 @@ export function WarRoom({
   incident: Incident;
   rec: Recommendation | null;
 }) {
-  const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState<ActionType | null>(null);
   const spark = state.metrics.filter((m) => m.ts >= DEPLOY_AT - 25 * 60_000);
   const deploy = state.deployments.find((d) => d.id === "dep-payments-2814");
@@ -34,7 +45,6 @@ export function WarRoom({
     setBusy(type);
     try {
       await runAction(incident.id, type);
-      setArmed(false);
     } finally {
       setBusy(null);
     }
@@ -58,11 +68,65 @@ export function WarRoom({
         <div className="mono text-[12px] text-muted">{formatDuration(state.now - incident.startedAt)} open</div>
       </div>
 
+      {incident.humanLoop && (
+        <HumanLoopBoard
+          brief={incident.humanLoop}
+          busy={busy !== null}
+          onApprove={
+            incident.humanLoop.awaiting
+              ? () => void fire(incident.humanLoop.actionType)
+              : undefined
+          }
+          onReject={
+            machineState === "REMEDIATION_PENDING" && !incident.remediation?.approved
+              ? () => void fire("reject_remediation")
+              : undefined
+          }
+        />
+      )}
+
       {state.pipeline && state.pipeline.incidentId === incident.id && (
         <PipelineBoard pipeline={state.pipeline} />
       )}
 
+      {state.stack && <StackBoard stack={state.stack} compact />}
+
+      {state.autonomy && <AutonomyBoard report={state.autonomy} compact />}
+
+      {state.evals && <EvalBoard report={state.evals} compact />}
+
+      {state.pipeline?.security && <SecurityBoard security={state.pipeline.security} />}
+
       {incident.detection && <DetectionBoard detection={incident.detection} />}
+
+      <InvestigationBoard investigation={incident.investigation} incidentId={incident.id} />
+
+      {incident.comms && <CommsBoard comms={incident.comms} />}
+
+      {incident.rca && <RcaBoard rca={incident.rca} />}
+
+      {incident.memory && <MemoryBoard memory={incident.memory} />}
+
+      {incident.blast && <BlastBoard blast={incident.blast} />}
+
+      {incident.remediation && (
+        <RemediationBoard
+          remediation={incident.remediation}
+          busy={busy !== null}
+          onApprove={
+            machineState === "REMEDIATION_PENDING"
+              ? () => void fire(incident.remediation.actionType)
+              : undefined
+          }
+          onReject={
+            machineState === "REMEDIATION_PENDING" && !incident.remediation.approved
+              ? () => void fire("reject_remediation")
+              : undefined
+          }
+        />
+      )}
+
+      {incident.postmortem && <PostmortemBoard postmortem={incident.postmortem} />}
 
       <StateMachineBoard incident={incident} />
 
@@ -72,10 +136,10 @@ export function WarRoom({
           <h1 className="text-xl font-medium tracking-tight">{incident.impact}</h1>
           <p className="mt-2 max-w-3xl text-[13px] leading-5 text-muted">{incident.investigation.summary}</p>
           <dl className="mt-4 grid grid-cols-2 gap-3 text-[12px] sm:grid-cols-4">
-            <Meta label="Affected" value={incident.affectedServiceIds.map(pretty).join(", ")} />
+            <Meta label="Affected" value={(incident.blast?.services.filter((s) => s.mark === "affected").map((s) => s.name) ?? incident.affectedServiceIds.map(pretty)).join(", ")} />
             <Meta label="Started" value={formatTime(incident.startedAt)} />
             <Meta label="Likely cause" value={incident.investigation.likelyCause} />
-            <Meta label="Blast radius" value={`~${formatNumber(incident.investigation.blastRadius.users)} users`} />
+            <Meta label="Blast radius" value={`~${formatNumber(incident.blast?.users ?? incident.investigation.blastRadius.users)} users`} />
           </dl>
         </div>
         <div className="bg-panel p-4">
@@ -86,52 +150,11 @@ export function WarRoom({
             <div className="kicker mb-1">Confidence</div>
             <ConfidenceBar value={incident.investigation.confidence} />
           </div>
-          {machineState === "REMEDIATION_PENDING" && rec?.primary === "rollback" && !incident.rollbackApplied && (
-            <div className="mt-4 space-y-2">
-              {!armed ? (
-                <button
-                  type="button"
-                  className="w-full border border-sev1 bg-sev1 px-3 py-2 text-[12px] font-medium text-bg"
-                  onClick={() => setArmed(true)}
-                >
-                  Execute rollback v2.8.14
-                </button>
-              ) : (
-                <div className="space-y-2 border border-sev1 p-3">
-                  <p className="text-[12px] text-muted">
-                    Rolls Payments API to v2.8.13. Auth recovers as pool pressure drops. This is the
-                    corrective action. Machine: REMEDIATION_PENDING → REMEDIATING.
-                  </p>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      disabled={busy !== null}
-                      className="flex-1 border border-sev1 bg-sev1 px-3 py-2 text-[12px] text-bg"
-                      onClick={() => void fire("rollback")}
-                    >
-                      {busy === "rollback" ? "Rolling back…" : "Confirm rollback"}
-                    </button>
-                    <button
-                      type="button"
-                      className="border border-line px-3 py-2 text-[12px]"
-                      onClick={() => setArmed(false)}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-          {machineState === "REMEDIATION_PENDING" && rec?.primary === "disable_flag" && (
-            <button
-              type="button"
-              disabled={busy !== null}
-              className="mt-4 w-full border border-sev1 bg-sev1 px-3 py-2 text-[12px] font-medium text-bg"
-              onClick={() => void fire("disable_flag")}
-            >
-              {busy === "disable_flag" ? "Disabling…" : "Disable new-tax-engine"}
-            </button>
+          {machineState === "REMEDIATION_PENDING" && (
+            <p className="mt-4 border border-line px-3 py-2 text-[12px] text-muted">
+              Playbook is waiting on the remediation agent above. The agent will not execute until
+              you approve.
+            </p>
           )}
           {(machineState === "NEED_HUMAN_INPUT" || machineState === "ESCALATED") && (
             <div className="mt-4 space-y-2">
@@ -162,14 +185,20 @@ export function WarRoom({
             </p>
           )}
           {machineState === "VERIFYING" && (
-            <button
-              type="button"
-              disabled={busy !== null}
-              className="mt-4 w-full border border-ok px-3 py-2 text-[12px] text-ok"
-              onClick={() => void fire("resolve")}
-            >
-              Resolve incident
-            </button>
+            <>
+              <p className="mt-4 border border-line px-3 py-2 text-[12px] text-muted">
+                Verification owns recovery. The autonomous commander will declare RESOLVED when
+                error rate is back under baseline.
+              </p>
+              <button
+                type="button"
+                disabled={busy !== null}
+                className="mt-4 w-full border border-ok px-3 py-2 text-[12px] text-ok"
+                onClick={() => void fire("resolve")}
+              >
+                Resolve incident
+              </button>
+            </>
           )}
           {isClosed(machineState) && (
             <Link
@@ -195,7 +224,7 @@ export function WarRoom({
             markerTs={DEPLOY_AT}
             markerLabel="v2.8.14"
           />
-          <div className="mt-4 grid grid-cols-3 gap-3">
+          <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <MiniChart
               label="Latency p95"
               color="var(--sev2)"
@@ -207,27 +236,32 @@ export function WarRoom({
               points={spark.map((m) => ({ ts: m.ts, value: m.dbConnections }))}
             />
             <MiniChart
-              label="Crash rate"
+              label="DB CPU %"
               color="var(--sev3)"
+              points={spark.map((m) => ({ ts: m.ts, value: m.dbCpu }))}
+            />
+            <MiniChart
+              label="Crash rate"
+              color="var(--sev1)"
               points={spark.map((m) => ({ ts: m.ts, value: m.crashRate }))}
             />
           </div>
         </div>
         <div className="p-4">
-          <div className="kicker mb-3">Hypotheses</div>
+          <div className="kicker mb-3">RCA candidates</div>
           <ul className="space-y-3">
-            {incident.investigation.hypotheses.map((h, idx) => (
-              <li key={h.id} className="border border-line p-3">
+            {(incident.rca?.candidates ?? []).map((row, idx) => (
+              <li key={row.id} className="border border-line p-3">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-[13px]">
-                    {idx + 1}. {h.title}
+                    {idx + 1}. {row.candidate}
                   </span>
-                  <span className="mono text-[11px] text-muted">{(h.confidence * 100).toFixed(0)}%</span>
+                  <span className="mono text-[11px] text-muted">{(row.probability * 100).toFixed(0)}%</span>
                 </div>
                 <div className="mt-1.5">
-                  <ConfidenceBar value={h.confidence} />
+                  <ConfidenceBar value={row.probability} />
                 </div>
-                <p className="mt-2 text-[12px] text-muted">{h.rationale}</p>
+                <p className="mt-2 text-[12px] text-muted">{row.evidence}</p>
               </li>
             ))}
           </ul>
@@ -251,12 +285,12 @@ export function WarRoom({
         </div>
         <div className="border-b border-line p-4 lg:border-b-0 lg:border-r">
           <div className="kicker mb-3">Blast radius</div>
-          <p className="text-[13px] leading-5">{incident.investigation.blastRadius.description}</p>
+          <p className="text-[13px] leading-5">{incident.blast?.answer ?? incident.investigation.blastRadius.description}</p>
           <div className="mt-3 flex items-center gap-2 text-[12px] text-muted">
             <IconUsers />
-            ~{formatNumber(incident.investigation.blastRadius.users)} users ·{" "}
-            {incident.investigation.blastRadius.regions.join(", ")}
-            {incident.investigation.blastRadius.revenuePath ? " · revenue path" : ""}
+            {formatNumber(incident.blast?.users ?? incident.investigation.blastRadius.users)} {incident.blast?.segment ? incident.blast.segment.toLowerCase() : "users"} ·{" "}
+            {(incident.blast?.regions.filter((r) => r.mark === "affected").map((r) => r.name) ?? incident.investigation.blastRadius.regions).join(", ")}
+            {(incident.blast?.revenuePath ?? incident.investigation.blastRadius.revenuePath) ? " · revenue path" : ""}
           </div>
           <div className="mt-4 kicker mb-2">Correlations</div>
           <ul className="space-y-2">
@@ -292,8 +326,8 @@ export function WarRoom({
             </div>
           ))}
           <p className="mb-3 text-[11px] text-muted">
-            Agents live in the platform pipeline above — detection, investigation, and comms run in
-            parallel; root cause through postmortem is serial.
+            Agents live in the platform pipeline above — detection, investigation, comms, and
+            memory run in parallel; root cause through postmortem is serial.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {incident.id === "INC-4821" && (

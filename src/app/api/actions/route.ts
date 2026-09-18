@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/store";
+import { SecurityDenied } from "@/lib/platform/security";
 import type { ActionType } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -13,6 +14,7 @@ const ACTIONS: ActionType[] = [
   "resolve",
   "provide_input",
   "escalate",
+  "reject_remediation",
 ];
 
 export async function POST(req: Request) {
@@ -24,6 +26,12 @@ export async function POST(req: Request) {
     const rec = getStore().act(body.incidentId, body.type);
     return NextResponse.json({ ok: true, action: rec, state: getStore().snapshot() });
   } catch (err) {
+    if (err instanceof SecurityDenied) {
+      return NextResponse.json(
+        { error: err.message, denied: true, decision: err.decision },
+        { status: 403 },
+      );
+    }
     return NextResponse.json({ error: (err as Error).message }, { status: 400 });
   }
 }

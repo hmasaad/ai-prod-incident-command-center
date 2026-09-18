@@ -65,3 +65,8 @@ export async function runAction(incidentId: string, type: ActionType) {
 export async function resetWorld() {
   await fetch("/api/reset", { method: "POST" });
 }
+
+export async function rerunEvals() {
+  const res = await fetch("/api/evals", { method: "POST" });
+  if (!res.ok) throw new Error("evals failed");
+}

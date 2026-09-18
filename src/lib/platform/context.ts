@@ -1,13 +1,19 @@
 import type {
   ActionType,
+  BlastVerdict,
   Deployment,
   DetectionVerdict,
   Incident,
+  Investigation,
   LogEvent,
   MetricSample,
+  RcaVerdict,
+  RemediationVerdict,
+  CommsVerdict,
+  MemoryVerdict,
+  Postmortem,
   Service,
 } from "../types";
-import type { Investigation } from "../types";
 
 export interface AgentContext {
   now: number;
@@ -19,6 +25,12 @@ export interface AgentContext {
   onCall: { primary: string; comms: string };
   analysis: Investigation;
   detection: DetectionVerdict;
+  rca: RcaVerdict;
+  blast: BlastVerdict;
+  remediation: RemediationVerdict;
+  comms: CommsVerdict;
+  postmortem: Postmortem;
+  memory: MemoryVerdict;
   lastHumanAction?: ActionType;
 }
 

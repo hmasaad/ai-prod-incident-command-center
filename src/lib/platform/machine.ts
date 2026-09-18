@@ -55,6 +55,7 @@ export interface MachineFacts {
   confidence: number;
   investigatingForMs: number;
   changeLanded: boolean;
+  metricsRecovered: boolean;
   postmortemReady: boolean;
 }
 
@@ -138,9 +139,17 @@ export function autoAdvance(machine: IncidentMachine, facts: MachineFacts): Inci
         "investigation",
       );
     } else if (current.state === "ROOT_CAUSE_IDENTIFIED") {
-      current = tryApply(current, "playbook_ready", facts.now, "Playbook selected. Waiting on commander.", "remediation");
+      current = tryApply(current, "playbook_ready", facts.now, "Blast named. Playbook selected. Policy check.", "blast-radius");
     } else if (current.state === "REMEDIATING" && facts.changeLanded) {
       current = tryApply(current, "change_landed", facts.now, "Change is live. Verification agent owns recovery.", "verification");
+    } else if (current.state === "VERIFYING" && facts.metricsRecovered) {
+      current = tryApply(
+        current,
+        "declare_resolved",
+        facts.now,
+        "Error rate back under baseline. Autonomous commander declared RESOLVED.",
+        "verification",
+      );
     } else if (current.state === "RESOLVED" && facts.postmortemReady) {
       current = tryApply(current, "postmortem_ready", facts.now, "Postmortem compiled from checkpoints + timeline.", "postmortem");
     }
@@ -158,6 +167,7 @@ export function agentPhase(state: IncidentStatus, id: AgentId): AgentRunStatus {
     detection: ["DETECTED", "TRIAGING", "INVESTIGATING", "NEED_HUMAN_INPUT", "ESCALATED", "ROOT_CAUSE_IDENTIFIED", "REMEDIATION_PENDING", "REMEDIATING", "VERIFYING", "RESOLVED", "POSTMORTEM"],
     investigation: ["INVESTIGATING", "NEED_HUMAN_INPUT", "ESCALATED", "ROOT_CAUSE_IDENTIFIED", "REMEDIATION_PENDING", "REMEDIATING", "VERIFYING", "RESOLVED", "POSTMORTEM"],
     communication: ["TRIAGING", "INVESTIGATING", "NEED_HUMAN_INPUT", "ESCALATED", "ROOT_CAUSE_IDENTIFIED", "REMEDIATION_PENDING", "REMEDIATING", "VERIFYING", "RESOLVED", "POSTMORTEM"],
+    memory: ["DETECTED", "TRIAGING", "INVESTIGATING", "NEED_HUMAN_INPUT", "ESCALATED", "ROOT_CAUSE_IDENTIFIED", "REMEDIATION_PENDING", "REMEDIATING", "VERIFYING", "RESOLVED", "POSTMORTEM"],
     "root-cause": ["ROOT_CAUSE_IDENTIFIED", "REMEDIATION_PENDING", "REMEDIATING", "VERIFYING", "RESOLVED", "POSTMORTEM"],
     "blast-radius": ["ROOT_CAUSE_IDENTIFIED", "REMEDIATION_PENDING", "REMEDIATING", "VERIFYING", "RESOLVED", "POSTMORTEM"],
     remediation: ["REMEDIATION_PENDING", "REMEDIATING", "VERIFYING", "RESOLVED", "POSTMORTEM"],
@@ -166,8 +176,8 @@ export function agentPhase(state: IncidentStatus, id: AgentId): AgentRunStatus {
   };
   const live: Partial<Record<IncidentStatus, Partial<Record<AgentId, AgentRunStatus>>>> = {
     DETECTED: { detection: "running" },
-    TRIAGING: { detection: "complete", communication: "running" },
-    INVESTIGATING: { investigation: "running", communication: "running" },
+    TRIAGING: { detection: "complete", communication: "running", memory: "running" },
+    INVESTIGATING: { investigation: "running", communication: "running", memory: "running" },
     NEED_HUMAN_INPUT: { investigation: "blocked", communication: "running" },
     ESCALATED: { investigation: "blocked", communication: "complete" },
     REMEDIATION_PENDING: { remediation: "blocked" },
@@ -243,17 +253,17 @@ export function seedMachine(id: string): IncidentMachine {
       { event: "begin_investigation", to: "INVESTIGATING", at: Date.parse("2026-09-13T19:05:00Z"), reason: "Memory cap suspected.", agentId: "investigation" },
       { event: "evidence_sufficient", to: "ROOT_CAUSE_IDENTIFIED", at: Date.parse("2026-09-13T19:12:00Z"), reason: "86% on Redis memory cap.", agentId: "root-cause" },
       { event: "playbook_ready", to: "REMEDIATION_PENDING", at: Date.parse("2026-09-13T19:12:30Z"), reason: "Scale Redis.", agentId: "remediation" },
-      { event: "approve_remediation", to: "REMEDIATING", at: Date.parse("2026-09-13T19:18:00Z"), reason: "Scale executed.", agentId: "remediation" },
+      { event: "approve_remediation", to: "REMEDIATING", at: Date.parse("2026-09-13T19:18:00Z"), reason: "Policy automatic · SEV-3 · LOW. Agent auto-executed scale Redis.", agentId: "remediation" },
       { event: "change_landed", to: "VERIFYING", at: Date.parse("2026-09-13T19:28:00Z"), reason: "Evictions stopped.", agentId: "verification" },
-      { event: "declare_resolved", to: "RESOLVED", at: Date.parse("2026-09-13T19:41:00Z"), reason: "Commander closed.", agentId: "verification" },
+      { event: "declare_resolved", to: "RESOLVED", at: Date.parse("2026-09-13T19:41:00Z"), reason: "Verification recovered. Autonomous commander declared RESOLVED.", agentId: "verification" },
       { event: "postmortem_ready", to: "POSTMORTEM", at: Date.parse("2026-09-13T19:44:00Z"), reason: "Postmortem from timeline.", agentId: "postmortem" },
     ]);
   }
   return walk([
     { event: "triage", to: "TRIAGING", at: TRIAGED_AT, reason: "Actual incident, not noise. SEV-1 · 94% · Payments API · started 10:42.", agentId: "detection" },
-    { event: "begin_investigation", to: "INVESTIGATING", at: INVESTIGATION_STARTED_AT, reason: "Logs, traces, and the 10:38 deploy are in scope.", agentId: "investigation" },
-    { event: "evidence_sufficient", to: "ROOT_CAUSE_IDENTIFIED", at: INVESTIGATED_AT, reason: "91% on Payments v2.8.14. Auth is collateral.", agentId: "root-cause" },
-    { event: "playbook_ready", to: "REMEDIATION_PENDING", at: REMEDIATION_PENDING_AT, reason: "Rollback v2.8.14 is the corrective action. Awaiting commander.", agentId: "remediation" },
+    { event: "begin_investigation", to: "INVESTIGATING", at: INVESTIGATION_STARTED_AT, reason: "Causal chain: deploy → new query → pool → timeout → 500 → payments.", agentId: "investigation" },
+    { event: "evidence_sufficient", to: "ROOT_CAUSE_IDENTIFIED", at: INVESTIGATED_AT, reason: "RCA engine: v2.8.14 91%. DB overload 78% contributing. Network 12% and external API 6% disconfirmed.", agentId: "root-cause" },
+    { event: "playbook_ready", to: "REMEDIATION_PENDING", at: REMEDIATION_PENDING_AT, reason: "Blast: 18,423 NA premium · Payments + Checkout. Auth/Profile/Notify quiet. Rollback awaiting commander.", agentId: "blast-radius" },
   ]);
 }
 
